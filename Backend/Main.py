@@ -3,9 +3,9 @@ import logging
 from fastapi import FastAPI, WebSocket
 from contextlib import asynccontextmanager
 
-from websocket_handler import handle_websocket
-from timer_worker import TimerWorker
-from database import (
+from WebSocket_Handler import handle_websocket
+from Timer_Worker import TimerWorker
+from Database import (
     test_connection,
     create_indexes,
     close_connection
