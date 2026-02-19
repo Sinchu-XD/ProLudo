@@ -1,7 +1,8 @@
 import asyncio
-import random
 from database import games_collection
 from game_engine import GameEngine
+from lock_manager import get_game_lock
+from websocket_handler import broadcast_to_game
 
 
 class BotEngine:
@@ -9,37 +10,80 @@ class BotEngine:
     @staticmethod
     async def play_turn(game_id, bot_user_id):
 
-        # Delay for human-like thinking
-        await asyncio.sleep(1.5)
+        lock = get_game_lock(game_id)
 
-        game = await games_collection.find_one({"game_id": game_id})
+        async with lock:
 
-        if not game or game["status"] != "playing":
-            return
+            game = await games_collection.find_one({"game_id": game_id})
 
-        if game["current_turn"] != bot_user_id:
-            return
+            if not game or game["status"] != "playing":
+                return
 
-        # Roll dice
-        dice_result = await GameEngine.roll_dice(game, bot_user_id)
+            if game["current_turn"] != bot_user_id:
+                return
 
-        if "error" in dice_result:
-            return
+            player = next(
+                (p for p in game["players"]
+                 if p["user_id"] == bot_user_id and p["status"] == "bot"),
+                None
+            )
 
-        dice = dice_result["dice"]
+            if not player:
+                return
 
-        game = await games_collection.find_one({"game_id": game_id})
+            # Human-like thinking delay
+            await asyncio.sleep(1.5)
 
-        player = next(p for p in game["players"] if p["user_id"] == bot_user_id)
+            # ================= ROLL DICE =================
+            dice_result = await GameEngine.roll_dice(game, bot_user_id)
 
-        best_token = BotEngine.choose_best_token(game, player, dice)
+            if "error" in dice_result:
+                return
 
-        if best_token is None:
-            return  # no move possible
+            dice = dice_result["dice"]
 
-        await asyncio.sleep(1)
+            game = await games_collection.find_one({"game_id": game_id})
 
-        await GameEngine.move_token(game, bot_user_id, best_token)
+            await broadcast_to_game(game, {
+                "type": "dice_rolled",
+                "player": bot_user_id,
+                "dice": dice
+            })
+
+            await asyncio.sleep(1)
+
+            # ================= SELECT TOKEN =================
+            best_token = BotEngine.choose_best_token(game, player, dice)
+
+            if best_token is None:
+                # No valid move → skip handled by engine
+                return
+
+            move_result = await GameEngine.move_token(
+                game,
+                bot_user_id,
+                best_token
+            )
+
+            if "error" in move_result:
+                return
+
+            game = await games_collection.find_one({"game_id": game_id})
+
+            await broadcast_to_game(game, {
+                "type": "token_moved",
+                "player": bot_user_id,
+                "position": move_result["new_position"],
+                "capture": move_result["capture"],
+                "bonus": move_result["bonus_turn"],
+                "next_turn": game["current_turn"],
+                "winner": move_result["winner"]
+            })
+
+            # ================= BONUS TURN LOOP =================
+            if move_result["bonus_turn"] and not move_result["winner"]:
+                await asyncio.sleep(1)
+                await BotEngine.play_turn(game_id, bot_user_id)
 
     # ======================================================
     # SMART TOKEN SELECTION
@@ -51,7 +95,11 @@ class BotEngine:
 
         for idx, pos in enumerate(player["tokens"]):
 
-            # Token closed
+            # Token finished
+            if pos == 52:
+                continue
+
+            # Closed token
             if pos == -1:
                 if dice == 6:
                     valid_moves.append((idx, 0))
@@ -72,11 +120,10 @@ class BotEngine:
             for opponent in game["players"]:
                 if opponent["user_id"] == player["user_id"]:
                     continue
-
                 if new_pos in opponent["tokens"]:
                     return idx
 
-        # PRIORITY 2: Furthest progress
+        # PRIORITY 2: Highest progress
         best = max(valid_moves, key=lambda x: x[1])
         return best[0]
-      
+        
