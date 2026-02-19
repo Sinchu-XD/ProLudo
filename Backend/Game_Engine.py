@@ -197,5 +197,5 @@ class GameEngine:
         await games_collection.update_one(
             {"game_id": game_id},
             {"$set": {"status": "finished"}}
-            )
+        )
         
