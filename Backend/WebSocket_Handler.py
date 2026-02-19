@@ -1,9 +1,9 @@
 from fastapi import WebSocket
-from database import users_collection, rooms_collection, games_collection
-from models import create_user_model, create_room_model
-from auth import verify_telegram_init_data
-from game_engine import GameEngine
-from timer_worker import TimerWorker
+from Database import users_collection, rooms_collection, games_collection
+from Models import create_user_model, create_room_model
+from Auth import verify_telegram_init_data
+from Game_Engine import GameEngine
+from Timer_Worker import TimerWorker
 import uuid
 import json
 from datetime import datetime
