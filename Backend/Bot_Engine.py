@@ -2,7 +2,7 @@ import asyncio
 from Database import games_collection
 from Game_Engine import GameEngine
 from Lock_Manager import get_game_lock
-from WebSocket_Handler import broadcast_to_game
+from Connection_Manager import broadcast_to_game
 
 
 class BotEngine:
