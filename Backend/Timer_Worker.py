@@ -1,10 +1,10 @@
 import asyncio
 from datetime import datetime, timedelta
-from database import games_collection
-from config import TURN_TIME, RECONNECT_TIME
-from bot_engine import BotEngine
-from lock_manager import get_game_lock
-from websocket_handler import send_to_user
+from Database import games_collection
+from Config import TURN_TIME, RECONNECT_TIME
+from Bot_Engine import BotEngine
+from Lock_Manager import get_game_lock
+from WebSocket_Handler import send_to_user
 
 
 class TimerWorker:
