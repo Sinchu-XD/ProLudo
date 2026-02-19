@@ -2,143 +2,177 @@ import random
 from datetime import datetime, timedelta
 from database import games_collection, users_collection, match_history_collection
 from config import TURN_TIME
+from lock_manager import get_game_lock
 
-SAFE_TILES = [0, 8, 13, 21, 26, 34, 39, 47]  # example safe positions
+SAFE_TILES = [0, 8, 13, 21, 26, 34, 39, 47]
 TOTAL_PATH = 52
-HOME_PATH = 6
 
 
 class GameEngine:
 
+    # ====================================================
+    # ROLL DICE
+    # ====================================================
     @staticmethod
     async def roll_dice(game, user_id):
-        if game["current_turn"] != user_id:
-            return {"error": "Not your turn"}
 
-        if game.get("dice_value") is not None:
-            return {"error": "Dice already rolled"}
+        lock = get_game_lock(game["game_id"])
 
-        dice = random.randint(1, 6)
+        async with lock:
 
-        await games_collection.update_one(
-            {"game_id": game["game_id"]},
-            {"$set": {
-                "dice_value": dice,
-                "turn_deadline": datetime.utcnow() + timedelta(seconds=TURN_TIME)
-            }}
-        )
+            game = await games_collection.find_one({"game_id": game["game_id"]})
 
-        return {"dice": dice}
+            if not game or game["status"] != "playing":
+                return {"error": "Game not active"}
+
+            if game["current_turn"] != user_id:
+                return {"error": "Not your turn"}
+
+            if game.get("dice_value") is not None:
+                return {"error": "Dice already rolled"}
+
+            dice = random.randint(1, 6)
+
+            await games_collection.update_one(
+                {"game_id": game["game_id"]},
+                {"$set": {
+                    "dice_value": dice,
+                    "turn_deadline": datetime.utcnow() + timedelta(seconds=TURN_TIME)
+                }}
+            )
+
+            return {"dice": dice}
 
     # ====================================================
     # MOVE TOKEN
     # ====================================================
     @staticmethod
     async def move_token(game, user_id, token_index):
-        if game["current_turn"] != user_id:
-            return {"error": "Not your turn"}
 
-        dice = game.get("dice_value")
-        if dice is None:
-            return {"error": "Roll dice first"}
+        lock = get_game_lock(game["game_id"])
 
-        player = next(p for p in game["players"] if p["user_id"] == user_id)
+        async with lock:
 
-        token_pos = player["tokens"][token_index]
+            game = await games_collection.find_one({"game_id": game["game_id"]})
 
-        # 6 required to open
-        if token_pos == -1:
-            if dice != 6:
-                return {"error": "Need 6 to open token"}
-            new_pos = 0
-        else:
-            new_pos = token_pos + dice
-            if new_pos > TOTAL_PATH:
-                return {"error": "Invalid move"}
+            if not game or game["status"] != "playing":
+                return {"error": "Game not active"}
 
-        capture_happened = False
+            if game["current_turn"] != user_id:
+                return {"error": "Not your turn"}
 
-        # Check capture
-        for opponent in game["players"]:
-            if opponent["user_id"] == user_id:
-                continue
+            if not isinstance(token_index, int) or token_index < 0 or token_index > 3:
+                return {"error": "Invalid token"}
 
-            for idx, opp_pos in enumerate(opponent["tokens"]):
-                if opp_pos == new_pos and new_pos not in SAFE_TILES:
-                    opponent["tokens"][idx] = -1
-                    capture_happened = True
+            dice = game.get("dice_value")
+            if dice is None:
+                return {"error": "Roll dice first"}
 
-        player["tokens"][token_index] = new_pos
+            player = next((p for p in game["players"] if p["user_id"] == user_id), None)
+            if not player:
+                return {"error": "Player not found"}
 
-        # Win check
-        if new_pos == TOTAL_PATH:
-            player["finished"] += 1
+            token_pos = player["tokens"][token_index]
 
-        winner = None
-        if player["finished"] == 4:
-            winner = user_id
+            # Cannot move already finished token
+            if token_pos == TOTAL_PATH:
+                return {"error": "Token already finished"}
 
-        bonus_turn = False
-        if dice == 6 or capture_happened:
-            bonus_turn = True
+            # 6 required to open
+            if token_pos == -1:
+                if dice != 6:
+                    return {"error": "Need 6 to open"}
+                new_pos = 0
+            else:
+                new_pos = token_pos + dice
+                if new_pos > TOTAL_PATH:
+                    return {"error": "Invalid move"}
 
-        # Determine next turn
-        if not bonus_turn:
-            next_index = (game["players"].index(player) + 1) % len(game["players"])
-            next_player = game["players"][next_index]["user_id"]
-        else:
-            next_player = user_id
+            capture_happened = False
 
-        # Update DB
-        await games_collection.update_one(
-            {"game_id": game["game_id"]},
-            {"$set": {
-                "players": game["players"],
-                "current_turn": next_player,
-                "dice_value": None,
-                "turn_deadline": datetime.utcnow() + timedelta(seconds=TURN_TIME)
-            }}
-        )
+            # CAPTURE CHECK
+            for opponent in game["players"]:
+                if opponent["user_id"] == user_id:
+                    continue
 
-        # If winner
-        if winner:
-            await GameEngine.finish_game(game, winner)
+                for idx, opp_pos in enumerate(opponent["tokens"]):
+                    if opp_pos == new_pos and new_pos not in SAFE_TILES:
+                        opponent["tokens"][idx] = -1
+                        capture_happened = True
 
-        return {
-            "new_position": new_pos,
-            "capture": capture_happened,
-            "bonus_turn": bonus_turn,
-            "winner": winner
-        }
+            player["tokens"][token_index] = new_pos
+
+            # WIN CHECK
+            if new_pos == TOTAL_PATH:
+                player["finished"] += 1
+
+            winner = None
+            if player["finished"] >= 4:
+                winner = user_id
+
+            bonus_turn = dice == 6 or capture_happened
+
+            if not bonus_turn:
+                current_index = game["players"].index(player)
+                next_index = (current_index + 1) % len(game["players"])
+                next_player = game["players"][next_index]["user_id"]
+            else:
+                next_player = user_id
+
+            await games_collection.update_one(
+                {"game_id": game["game_id"]},
+                {"$set": {
+                    "players": game["players"],
+                    "current_turn": next_player,
+                    "dice_value": None,
+                    "turn_deadline": datetime.utcnow() + timedelta(seconds=TURN_TIME)
+                }}
+            )
+
+            if winner:
+                await GameEngine.finish_game(game["game_id"], winner)
+
+            return {
+                "new_position": new_pos,
+                "capture": capture_happened,
+                "bonus_turn": bonus_turn,
+                "winner": winner
+            }
 
     # ====================================================
     # FINISH GAME
     # ====================================================
     @staticmethod
-    async def finish_game(game, winner_id):
+    async def finish_game(game_id, winner_id):
+
+        game = await games_collection.find_one({"game_id": game_id})
+
+        if not game:
+            return
 
         for player in game["players"]:
+
             user = await users_collection.find_one({"user_id": player["user_id"]})
+            if not user:
+                continue
 
             if player["user_id"] == winner_id:
-                new_coins = user["coins"] + 50
+                coins = user["coins"] + 50
                 wins = user["wins"] + 1
                 streak = user["win_streak"] + 1
                 losses = user["losses"]
                 result = "win"
-                earned = 50
             else:
-                new_coins = user["coins"] + 5
+                coins = user["coins"] + 5
                 wins = user["wins"]
                 losses = user["losses"] + 1
                 streak = 0
                 result = "loss"
-                earned = 5
 
             await users_collection.update_one(
                 {"user_id": player["user_id"]},
                 {"$set": {
-                    "coins": new_coins,
+                    "coins": coins,
                     "wins": wins,
                     "losses": losses,
                     "win_streak": streak
@@ -147,7 +181,7 @@ class GameEngine:
 
         # Save match history
         await match_history_collection.insert_one({
-            "match_id": game["game_id"],
+            "match_id": game_id,
             "mode": game["mode"],
             "players": [
                 {
@@ -160,9 +194,8 @@ class GameEngine:
             "created_at": datetime.utcnow()
         })
 
-        # Mark game finished
         await games_collection.update_one(
-            {"game_id": game["game_id"]},
+            {"game_id": game_id},
             {"$set": {"status": "finished"}}
-      )
-      
+            )
+        
