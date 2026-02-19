@@ -1,8 +1,8 @@
 import random
 from datetime import datetime, timedelta
-from database import games_collection, users_collection, match_history_collection
-from config import TURN_TIME
-from lock_manager import get_game_lock
+from Database import games_collection, users_collection, match_history_collection
+from Config import TURN_TIME
+from Lock_Manager import get_game_lock
 
 SAFE_TILES = [0, 8, 13, 21, 26, 34, 39, 47]
 TOTAL_PATH = 52
