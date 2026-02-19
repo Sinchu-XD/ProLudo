@@ -14,7 +14,7 @@ DEBUG = ENV != "production"
 # REQUIRED VARIABLES
 # ==========================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8231818663:AAFtLagnRx0OSfIBO_a0RcXWkgRIExJsOqQ")
 if not BOT_TOKEN:
     raise RuntimeError("❌ BOT_TOKEN is not set in environment variables")
 
@@ -22,7 +22,7 @@ if not BOT_TOKEN:
 # DATABASE
 # ==========================================
 
-MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
+MONGO_URL = os.getenv("MONGO_URL", "mongodb+srv://Vexera:Vexera@vexera.wtrsmyc.mongodb.net/?appName=Vexera")
 
 # ==========================================
 # GAME SETTINGS (TYPE SAFE)
