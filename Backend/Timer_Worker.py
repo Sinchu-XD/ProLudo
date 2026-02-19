@@ -4,7 +4,7 @@ from Database import games_collection
 from Config import TURN_TIME, RECONNECT_TIME
 from Bot_Engine import BotEngine
 from Lock_Manager import get_game_lock
-from WebSocket_Handler import send_to_user
+from Connection_Manager import send_to_user
 
 
 class TimerWorker:
