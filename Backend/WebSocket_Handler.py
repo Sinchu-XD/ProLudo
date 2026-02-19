@@ -2,6 +2,8 @@ from fastapi import WebSocket
 from database import users_collection, rooms_collection, games_collection
 from models import create_user_model, create_room_model
 from auth import verify_telegram_init_data
+from game_engine import GameEngine
+from timer_worker import TimerWorker
 import uuid
 import json
 from datetime import datetime
@@ -19,12 +21,12 @@ async def send_to_user(user_id, data):
         await ws.send_json(data)
 
 
-async def broadcast_to_room(room, data):
-    for uid in room.get("players", []):
-        await send_to_user(uid, data)
+async def broadcast_to_game(game, data):
+    for player in game.get("players", []):
+        await send_to_user(player["user_id"], data)
 
-    for sid in room.get("spectators", []):
-        await send_to_user(sid, data)
+    for spectator in game.get("spectators", []):
+        await send_to_user(spectator, data)
 
 
 # ===============================
@@ -33,7 +35,6 @@ async def broadcast_to_room(room, data):
 
 async def handle_websocket(websocket: WebSocket):
     await websocket.accept()
-
     user_id = None
 
     try:
@@ -41,9 +42,7 @@ async def handle_websocket(websocket: WebSocket):
             data = await websocket.receive_json()
             action = data.get("action")
 
-            # ======================================
-            # AUTH
-            # ======================================
+            # ================= AUTH =================
             if action == "auth":
                 init_data = data.get("init_data")
 
@@ -53,7 +52,6 @@ async def handle_websocket(websocket: WebSocket):
 
                 user = json.loads(data["user"])
                 user_id = user["id"]
-
                 active_connections[user_id] = websocket
 
                 existing = await users_collection.find_one({"user_id": user_id})
@@ -62,12 +60,10 @@ async def handle_websocket(websocket: WebSocket):
 
                 await websocket.send_json({"type": "auth_success"})
 
-            # ======================================
-            # CREATE ROOM
-            # ======================================
+            # ================= CREATE ROOM =================
             elif action == "create_room":
-                mode = data.get("mode")  # 2p / 4p
-                room_type = data.get("type")  # public/private
+                mode = data.get("mode")
+                room_type = data.get("type")
 
                 room_id = str(uuid.uuid4())
                 room = create_room_model(room_id, user_id, mode, room_type)
@@ -82,12 +78,9 @@ async def handle_websocket(websocket: WebSocket):
                     "room": room
                 })
 
-            # ======================================
-            # JOIN ROOM
-            # ======================================
+            # ================= JOIN ROOM =================
             elif action == "join_room":
                 room_id = data.get("room_id")
-
                 room = await rooms_collection.find_one({"room_id": room_id})
 
                 if not room:
@@ -108,79 +101,15 @@ async def handle_websocket(websocket: WebSocket):
 
                 room = await rooms_collection.find_one({"room_id": room_id})
 
-                await broadcast_to_room(room, {
-                    "type": "player_joined",
-                    "players": room["players"]
-                })
+                for uid in room["players"]:
+                    await send_to_user(uid, {
+                        "type": "player_joined",
+                        "players": room["players"]
+                    })
 
-            # ======================================
-            # QUICK MATCH (PUBLIC MATCHMAKING)
-            # ======================================
-            elif action == "quick_match":
-                mode = data.get("mode")
-
-                room = await rooms_collection.find_one({
-                    "mode": mode,
-                    "type": "public",
-                    "status": "waiting",
-                    "$expr": {"$lt": [{"$size": "$players"}, "$max_players"]}
-                })
-
-                if room:
-                    await rooms_collection.update_one(
-                        {"room_id": room["room_id"]},
-                        {"$push": {"players": user_id}}
-                    )
-                else:
-                    room_id = str(uuid.uuid4())
-                    room = create_room_model(room_id, user_id, mode, "public")
-                    await rooms_collection.insert_one(room)
-
-                room = await rooms_collection.find_one({"room_id": room["room_id"]})
-
-                await broadcast_to_room(room, {
-                    "type": "match_update",
-                    "players": room["players"]
-                })
-
-            # ======================================
-            # SPECTATOR JOIN
-            # ======================================
-            elif action == "watch_game":
-                room_id = data.get("room_id")
-
-                room = await rooms_collection.find_one({"room_id": room_id})
-
-                if not room:
-                    await websocket.send_json({"error": "Room not found"})
-                    continue
-
-                if room["type"] != "public":
-                    await websocket.send_json({"error": "Private room"})
-                    continue
-
-                if len(room.get("spectators", [])) >= 20:
-                    await websocket.send_json({"error": "Spectator limit reached"})
-                    continue
-
-                await rooms_collection.update_one(
-                    {"room_id": room_id},
-                    {"$push": {"spectators": user_id}}
-                )
-
-                room = await rooms_collection.find_one({"room_id": room_id})
-
-                await websocket.send_json({
-                    "type": "spectator_joined",
-                    "room": room
-                })
-
-            # ======================================
-            # HOST START GAME
-            # ======================================
+            # ================= START GAME =================
             elif action == "start_game":
                 room_id = data.get("room_id")
-
                 room = await rooms_collection.find_one({"room_id": room_id})
 
                 if not room:
@@ -195,8 +124,8 @@ async def handle_websocket(websocket: WebSocket):
                     await websocket.send_json({"error": "Room not full"})
                     continue
 
-                players_data = []
                 colors = ["red", "blue", "green", "yellow"]
+                players_data = []
 
                 for idx, uid in enumerate(room["players"]):
                     players_data.append({
@@ -211,9 +140,10 @@ async def handle_websocket(websocket: WebSocket):
                     "game_id": room_id,
                     "mode": room["mode"],
                     "players": players_data,
+                    "spectators": [],
                     "current_turn": players_data[0]["user_id"],
                     "dice_value": None,
-                    "turn_deadline": None,
+                    "turn_deadline": datetime.utcnow(),
                     "status": "playing",
                     "created_at": datetime.utcnow()
                 }
@@ -225,13 +155,95 @@ async def handle_websocket(websocket: WebSocket):
                     {"$set": {"status": "playing"}}
                 )
 
-                await broadcast_to_room(room, {
+                await broadcast_to_game(game_data, {
                     "type": "game_started",
                     "game": game_data
+                })
+
+            # ================= ROLL DICE =================
+            elif action == "roll_dice":
+                game_id = data.get("game_id")
+                game = await games_collection.find_one({"game_id": game_id})
+
+                if not game:
+                    continue
+
+                result = await GameEngine.roll_dice(game, user_id)
+
+                if "error" in result:
+                    await websocket.send_json(result)
+                    continue
+
+                game = await games_collection.find_one({"game_id": game_id})
+
+                await broadcast_to_game(game, {
+                    "type": "dice_rolled",
+                    "player": user_id,
+                    "dice": result["dice"]
+                })
+
+            # ================= MOVE TOKEN =================
+            elif action == "move_token":
+                game_id = data.get("game_id")
+                token_index = data.get("token_index")
+
+                game = await games_collection.find_one({"game_id": game_id})
+
+                if not game:
+                    continue
+
+                result = await GameEngine.move_token(game, user_id, token_index)
+
+                if "error" in result:
+                    await websocket.send_json(result)
+                    continue
+
+                game = await games_collection.find_one({"game_id": game_id})
+
+                await broadcast_to_game(game, {
+                    "type": "token_moved",
+                    "player": user_id,
+                    "position": result["new_position"],
+                    "capture": result["capture"],
+                    "bonus": result["bonus_turn"],
+                    "next_turn": game["current_turn"],
+                    "winner": result["winner"]
+                })
+
+                if result["winner"]:
+                    await broadcast_to_game(game, {
+                        "type": "game_finished",
+                        "winner": result["winner"]
+                    })
+
+            # ================= RECONNECT =================
+            elif action == "reconnect":
+                game_id = data.get("game_id")
+
+                await TimerWorker.mark_reconnected(game_id, user_id)
+
+                game = await games_collection.find_one({"game_id": game_id})
+
+                await websocket.send_json({
+                    "type": "game_state",
+                    "game": game
                 })
 
     except Exception:
         if user_id:
             active_connections.pop(user_id, None)
 
+            # mark disconnected in active game
+            game = await games_collection.find_one({
+                "status": "playing",
+                "players.user_id": user_id
+            })
+
+            if game:
+                await TimerWorker.mark_disconnected(
+                    game["game_id"],
+                    user_id
+                )
+
         await websocket.close()
+                    
