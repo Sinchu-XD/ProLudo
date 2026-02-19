@@ -1,8 +1,8 @@
 import asyncio
-from database import games_collection
-from game_engine import GameEngine
-from lock_manager import get_game_lock
-from websocket_handler import broadcast_to_game
+from Database import games_collection
+from Game_Engine import GameEngine
+from Lock_Manager import get_game_lock
+from WebSocket_Handler import broadcast_to_game
 
 
 class BotEngine:
