@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import time
 from urllib.parse import parse_qs
-from config import BOT_TOKEN
+from Config import BOT_TOKEN
 
 
 # Max age of Telegram auth (in seconds)
