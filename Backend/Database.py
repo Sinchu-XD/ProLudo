@@ -1,5 +1,5 @@
 from motor.motor_asyncio import AsyncIOMotorClient
-from config import MONGO_URL
+from Config import MONGO_URL
 import logging
 
 logger = logging.getLogger("ludo_pro_db")
